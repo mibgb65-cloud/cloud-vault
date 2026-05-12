@@ -1,0 +1,24 @@
+{
+  "name": "Cloud-Vault",
+  "short_name": "Cloud-Vault",
+  "description": "A compact bookkeeping workspace for accounts, transactions, reports, and budgets.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0F172A",
+  "theme_color": "#0F172A",
+  "icons": [
+    {
+      "src": "/pwa-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

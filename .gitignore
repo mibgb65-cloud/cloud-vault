@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.codex-run/
+.npm-cache/
+.npm-logs/
+.wrangler/
+.wrangler-config/
+.env
+.env.local
+.DS_Store
+*.log
+npm-debug.log*
+pnpm-lock.yaml
+yarn.lock
+coverage/
+playwright-report/
+test-results/

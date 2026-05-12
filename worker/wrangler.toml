@@ -1,0 +1,24 @@
+name = "cloud-vault-api"
+main = "src/index.ts"
+compatibility_date = "2026-05-11"
+
+[vars]
+admin_email = "admin@example.com"
+registration_invite_code = "change-this-invite-code"
+jwt_secret = "change-this-jwt-secret"
+invite_hash_secret = "change-this-invite-hash-secret"
+registration_mode = "invite_only"
+default_currency = "CNY"
+default_locale = "zh-CN"
+deepseek_model = "deepseek-chat"
+# Set deepseek_api_key with `wrangler secret put deepseek_api_key`.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cloud-vault"
+database_id = "replace-with-d1-database-id"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "SESSION_KV"
+id = "replace-with-kv-namespace-id"
