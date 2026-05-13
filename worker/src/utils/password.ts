@@ -1,5 +1,5 @@
 const encoder = new TextEncoder()
-const iterations = 210_000
+const iterations = 100_000
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = ''
