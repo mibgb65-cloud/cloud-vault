@@ -23,6 +23,10 @@ export function logout() {
   return http.post<{ loggedOut: boolean }>('/auth/logout')
 }
 
+export function logoutOtherDevices() {
+  return http.post<{ loggedOutDevices: number }>('/auth/logout-other-devices')
+}
+
 export function getMe() {
   return http.get<{ user: User }>('/me')
 }

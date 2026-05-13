@@ -3,6 +3,7 @@ import type { AppVariables, CurrentUser, Env } from '../types/env'
 import { HttpError } from '../utils/http-error'
 import { toUser } from '../utils/mapper'
 import { verifySessionToken } from '../utils/jwt'
+import { ensureUserSessionIndexed, isStoredSession, sessionKey } from '../services/session.service'
 
 export type AppContext = Context<{ Bindings: Env; Variables: AppVariables }>
 
@@ -24,8 +25,8 @@ export const requireAuth: MiddlewareHandler<{ Bindings: Env; Variables: AppVaria
     throw new HttpError(401, 'TOKEN_EXPIRED', '登录已过期，请重新登录')
   }
 
-  const session = await c.env.SESSION_KV.get(`session:${payload.jti}`, 'json')
-  if (!session) {
+  const session = await c.env.SESSION_KV.get(sessionKey(payload.jti), 'json')
+  if (!isStoredSession(session) || session.userId !== payload.userId) {
     throw new HttpError(401, 'TOKEN_EXPIRED', '登录已过期，请重新登录')
   }
 
@@ -44,6 +45,7 @@ export const requireAuth: MiddlewareHandler<{ Bindings: Env; Variables: AppVaria
 
   c.set('currentUser', toUser(row) as CurrentUser)
   c.set('sessionJti', payload.jti)
+  await ensureUserSessionIndexed(c.env.SESSION_KV, payload.userId, payload.jti, session.expiresAt)
   await next()
 }
 

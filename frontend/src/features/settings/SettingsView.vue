@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { Archive, Edit3, X } from 'lucide-vue-next'
+import { Archive, Edit3, LogOut, X } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
+import { logoutOtherDevices } from '@/services/auth.api'
 import { archiveCategory, createCategory, listCategories, updateCategory } from '@/services/categories.api'
 import { archiveTag, createTag, listTags, updateTag } from '@/services/tags.api'
 import { useBookStore } from '@/stores/book.store'
@@ -18,6 +19,7 @@ const categories = ref<Category[]>([])
 const tags = ref<Tag[]>([])
 const loading = ref(false)
 const saving = ref(false)
+const sessionSaving = ref(false)
 const error = ref('')
 const success = ref('')
 const editingCategoryId = ref<string | null>(null)
@@ -207,6 +209,24 @@ async function removeTag(tag: Tag) {
   }
 }
 
+async function handleLogoutOtherDevices() {
+  if (!window.confirm('确认退出其他设备？当前设备会保持登录。')) {
+    return
+  }
+
+  sessionSaving.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    const result = await logoutOtherDevices()
+    success.value = result.loggedOutDevices > 0 ? `已退出 ${result.loggedOutDevices} 个其他设备` : '没有其他已登录设备'
+  } catch (logoutError) {
+    error.value = logoutError instanceof Error ? logoutError.message : '退出其他设备失败'
+  } finally {
+    sessionSaving.value = false
+  }
+}
+
 onMounted(load)
 watch(() => bookStore.currentBookId, load)
 </script>
@@ -244,6 +264,19 @@ watch(() => bookStore.currentBookId, load)
 
     <p v-if="error" class="border border-[var(--app-border)] bg-[var(--app-subtle)] px-3 py-2 text-sm font-bold text-expense">{{ error }}</p>
     <p v-else-if="success" class="border border-[var(--app-border)] bg-[var(--app-subtle)] px-3 py-2 text-sm font-bold text-income">{{ success }}</p>
+
+    <section class="border border-[var(--app-border)] bg-[var(--app-surface)] p-4">
+      <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <h2 class="text-sm font-extrabold">登录设备</h2>
+          <p class="mt-1 text-sm font-medium text-[var(--app-muted)]">最多 5 个活跃设备，当前设备保持登录。</p>
+        </div>
+        <BaseButton variant="secondary" :disabled="sessionSaving" @click="handleLogoutOtherDevices">
+          <LogOut class="h-4 w-4" />
+          {{ sessionSaving ? '处理中' : '退出其他设备' }}
+        </BaseButton>
+      </div>
+    </section>
 
     <section class="grid gap-3 xl:grid-cols-[360px_1fr]">
       <div class="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
