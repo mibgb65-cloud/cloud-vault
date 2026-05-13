@@ -1,4 +1,5 @@
 export interface Env {
+  ASSETS: Fetcher
   DB: D1Database
   SESSION_KV: KVNamespace
   admin_email: string
