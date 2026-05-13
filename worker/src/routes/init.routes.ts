@@ -5,11 +5,15 @@ import { hashInviteCode } from '../utils/crypto'
 import { HttpError } from '../utils/http-error'
 import { newId } from '../utils/id'
 import { nowIso } from '../utils/date'
+import { consumeRateLimit, getClientIp, rateLimitKey } from '../utils/rate-limit'
 import { ok } from '../utils/response'
 
 export const initRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
 initRoutes.get('/:secret', async (c) => {
+  const clientIp = getClientIp(c)
+  await consumeRateLimit(c.env.SESSION_KV, await rateLimitKey('init:ip', clientIp), 5, 600, '初始化请求过于频繁，请稍后再试')
+
   const secret = c.req.param('secret')
   if (!c.env.jwt_secret || secret !== c.env.jwt_secret) {
     throw new HttpError(403, 'FORBIDDEN', '初始化密钥无效')

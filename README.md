@@ -148,6 +148,7 @@ npm --workspace worker run deploy -- --dry-run
 - `jwt_secret` 和 `invite_hash_secret` 使用不同的随机长字符串
 - 首次管理员注册完成后，及时在后台调整注册和邀请码策略
 - 如开启 AI 记账，将 `deepseek_api_key` 配置为 Secret
+- 登录、注册和初始化接口已启用基于 KV 的基础限流：登录 20 次/10 分钟/IP，登录失败 5 次/10 分钟/IP+邮箱，注册 10 次/10 分钟/IP，初始化 5 次/10 分钟/IP
 
 ## 许可证
 

@@ -9,12 +9,16 @@ import { nowIso } from '../utils/date'
 import { hashPassword, verifyPassword } from '../utils/password'
 import { signSessionToken } from '../utils/jwt'
 import { toUser } from '../utils/mapper'
+import { assertRateLimitAvailable, clearRateLimit, consumeRateLimit, getClientIp, rateLimitKey } from '../utils/rate-limit'
 import { ok } from '../utils/response'
 import { requireAuth } from '../middlewares/auth.middleware'
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>()
 
 authRoutes.post('/register', async (c) => {
+  const clientIp = getClientIp(c)
+  await consumeRateLimit(c.env.SESSION_KV, await rateLimitKey('auth:register:ip', clientIp), 10, 600, '注册请求过于频繁，请稍后再试')
+
   const input = registerSchema.parse(await c.req.json())
   const email = input.email.trim().toLowerCase()
   const now = nowIso()
@@ -99,8 +103,14 @@ authRoutes.post('/register', async (c) => {
 })
 
 authRoutes.post('/login', async (c) => {
+  const clientIp = getClientIp(c)
+  await consumeRateLimit(c.env.SESSION_KV, await rateLimitKey('auth:login:ip', clientIp), 20, 600, '登录请求过于频繁，请稍后再试')
+
   const input = loginSchema.parse(await c.req.json())
   const email = input.email.trim().toLowerCase()
+  const failedLoginKey = await rateLimitKey('auth:login:fail', `${clientIp}:${email}`)
+  await assertRateLimitAvailable(c.env.SESSION_KV, failedLoginKey, 5, '登录失败次数过多，请稍后再试')
+
   const row = await c.env.DB.prepare(
     `SELECT id, email, password_hash, nickname, avatar_url, default_currency, locale, timezone, system_role, created_at, updated_at, last_login_at
      FROM users
@@ -111,8 +121,11 @@ authRoutes.post('/login', async (c) => {
     .first<Record<string, unknown> & { password_hash: string | null }>()
 
   if (!row || !(await verifyPassword(input.password, row.password_hash))) {
+    await consumeRateLimit(c.env.SESSION_KV, failedLoginKey, 5, 600, '登录失败次数过多，请稍后再试')
     throw new HttpError(401, 'UNAUTHORIZED', '邮箱或密码错误')
   }
+
+  await clearRateLimit(c.env.SESSION_KV, failedLoginKey)
 
   const user = toUser(row)
   const { token, jti, expiresIn } = await signSessionToken(
