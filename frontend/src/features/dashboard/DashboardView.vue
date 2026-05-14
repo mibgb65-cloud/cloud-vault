@@ -629,7 +629,7 @@ watch(
 </script>
 
 <template>
-  <div class="grid gap-3 xl:h-[calc(100vh-4.5rem)] xl:min-h-[720px] xl:grid-cols-[220px_minmax(270px,340px)_minmax(270px,1fr)_360px] 2xl:grid-cols-[232px_minmax(292px,380px)_minmax(292px,1fr)_400px]">
+  <div class="grid gap-3 xl:h-[calc(100vh-4.5rem)] xl:min-h-[720px] xl:grid-cols-[minmax(220px,400px)_minmax(270px,450px)_minmax(270px,1fr)_360px] 2xl:grid-cols-[minmax(320px,400px)_minmax(360px,450px)_minmax(292px,1fr)_400px] min-[1900px]:grid-cols-[400px_450px_minmax(292px,1fr)_400px]">
     <aside class="min-h-0 space-y-3 overflow-y-auto">
       <section class="border border-[var(--app-border)] bg-[var(--app-surface)] p-3">
         <div class="flex items-start gap-2">
