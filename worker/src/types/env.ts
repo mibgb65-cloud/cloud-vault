@@ -17,6 +17,7 @@ export interface CurrentUser {
   id: string
   email: string
   nickname: string
+  avatarUrl?: string | null
   systemRole: 'admin' | 'user'
   defaultCurrency: string
   locale: string

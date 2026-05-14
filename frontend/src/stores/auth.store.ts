@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { getMe, login, logout, type LoginInput } from '@/services/auth.api'
+import { getMe, login, logout, updateMe, type LoginInput, type UpdateMeInput } from '@/services/auth.api'
 import { setToken, getToken } from '@/services/http'
 import type { User } from '@/types/domain'
 
@@ -26,6 +26,12 @@ export const useAuthStore = defineStore('auth', () => {
     return result.user
   }
 
+  async function updateProfile(input: UpdateMeInput) {
+    const result = await updateMe(input)
+    user.value = result.user
+    return result.user
+  }
+
   async function signOut() {
     try {
       await logout()
@@ -43,6 +49,7 @@ export const useAuthStore = defineStore('auth', () => {
     isAdmin,
     signIn,
     loadMe,
+    updateProfile,
     signOut
   }
 })

@@ -110,6 +110,12 @@ async function mockApi(page: Page) {
     })
   )
 
+  await page.route(`**/api/v1/books/${bookId}/tags`, (route) =>
+    fulfill(route, {
+      items: [{ id: 'tag_work', bookId, name: '工作日', color: '#111111', createdAt: now, archivedAt: null }]
+    })
+  )
+
   await page.route(`**/api/v1/books/${bookId}/transactions**`, (route) =>
     fulfill(route, {
       items: [
@@ -135,7 +141,12 @@ async function mockApi(page: Page) {
           updatedAt: now
         }
       ],
-      nextCursor: null
+      pageInfo: {
+        page: 1,
+        pageSize: 50,
+        hasMore: false,
+        nextCursor: null
+      }
     })
   )
 

@@ -15,6 +15,7 @@ deepseek_model = "deepseek-chat"
 [[d1_databases]]
 binding = "DB"
 database_name = "cloud-vault"
+database_id = "0b95d679-93a8-42a8-91fd-5027bbd3f71f"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]

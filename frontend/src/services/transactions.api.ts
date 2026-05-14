@@ -12,6 +12,7 @@ export interface CreateTransactionInput {
   occurredAt: string
   note?: string | null
   merchantName?: string | null
+  sourceRef?: string | null
   tagIds: string[]
 }
 
@@ -26,6 +27,18 @@ export function createTransaction(bookId: string, input: CreateTransactionInput)
 
 export function updateTransaction(bookId: string, transactionId: string, input: CreateTransactionInput) {
   return http.patch<{ transaction: Transaction }>(`/books/${bookId}/transactions/${transactionId}`, input)
+}
+
+export function batchDeleteTransactions(bookId: string, transactionIds: string[]) {
+  return http.post<{ deleted: number }>(`/books/${bookId}/transactions/batch-delete`, { transactionIds })
+}
+
+export function batchUpdateTransactionCategory(bookId: string, transactionIds: string[], categoryId: string) {
+  return http.patch<{ updated: number }>(`/books/${bookId}/transactions/batch-category`, { transactionIds, categoryId })
+}
+
+export function importTransactions(bookId: string, items: CreateTransactionInput[]) {
+  return http.post<{ imported: number; skippedDuplicates: number }>(`/books/${bookId}/transactions/import`, { items })
 }
 
 export function deleteTransaction(bookId: string, transactionId: string) {

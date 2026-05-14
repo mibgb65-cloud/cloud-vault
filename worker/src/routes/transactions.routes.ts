@@ -3,7 +3,7 @@ import type { AppVariables, Env } from '../types/env'
 import { requireBookRole } from '../middlewares/auth.middleware'
 import { balanceStatements } from '../services/account-balance.service'
 import { assertAccountInBook, assertCategoryInBook, assertTagsInBook } from '../services/permission.service'
-import { createTransactionSchema } from '../schemas/transaction.schema'
+import { batchCategorySchema, batchTransactionIdsSchema, createTransactionSchema, importTransactionsSchema } from '../schemas/transaction.schema'
 import { HttpError } from '../utils/http-error'
 import { newId } from '../utils/id'
 import { nowIso, toDateKey } from '../utils/date'
@@ -54,6 +54,10 @@ async function validateTransactionInput(db: D1Database, bookId: string, input: R
     await assertCategoryInBook(db, bookId, input.categoryId, input.type)
   }
   await assertTagsInBook(db, bookId, input.tagIds)
+}
+
+function placeholders(count: number) {
+  return Array.from({ length: count }, () => '?').join(', ')
 }
 
 transactionsRoutes.get('/', async (c) => {
@@ -210,6 +214,164 @@ transactionsRoutes.post('/', async (c) => {
   await c.env.DB.batch(statements)
 
   return ok(c, { transaction: await loadTransaction(c.env.DB, bookId, transactionId) }, 201)
+})
+
+transactionsRoutes.post('/batch-delete', async (c) => {
+  const bookId = c.req.param('bookId')!
+  await requireBookRole(c, bookId, ['owner', 'admin', 'editor'])
+  const input = batchTransactionIdsSchema.parse(await c.req.json())
+  const ids = [...new Set(input.transactionIds)]
+  const rows = await c.env.DB.prepare(
+    `SELECT id, type, account_id, transfer_account_id, amount
+     FROM transactions
+     WHERE book_id = ? AND deleted_at IS NULL AND id IN (${placeholders(ids.length)})`
+  )
+    .bind(bookId, ...ids)
+    .all<TransactionRow>()
+  const transactions = rows.results ?? []
+  if (transactions.length === 0) {
+    throw new HttpError(404, 'NOT_FOUND', '未找到可删除的账单')
+  }
+
+  const now = nowIso()
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE transactions SET deleted_at = ?, updated_at = ? WHERE book_id = ? AND id IN (${placeholders(transactions.length)})`).bind(
+      now,
+      now,
+      bookId,
+      ...transactions.map((transaction) => transaction.id)
+    ),
+    ...transactions.flatMap((transaction) =>
+      balanceStatements(
+        c.env.DB,
+        {
+          type: transaction.type,
+          accountId: transaction.account_id,
+          transferAccountId: transaction.transfer_account_id,
+          amount: Number(transaction.amount)
+        },
+        true
+      )
+    )
+  ])
+
+  return ok(c, { deleted: transactions.length })
+})
+
+transactionsRoutes.post('/import', async (c) => {
+  const bookId = c.req.param('bookId')!
+  await requireBookRole(c, bookId, ['owner', 'admin', 'editor'])
+  const input = importTransactionsSchema.parse(await c.req.json())
+  const now = nowIso()
+  const statements: D1PreparedStatement[] = []
+  const sourceRefs = [...new Set(input.items.map((item) => item.sourceRef))]
+  const existingRows = await c.env.DB.prepare(
+    `SELECT source_ref FROM transactions
+     WHERE book_id = ? AND source = 'import' AND source_ref IN (${placeholders(sourceRefs.length)})`
+  )
+    .bind(bookId, ...sourceRefs)
+    .all<{ source_ref: string }>()
+  const existingRefs = new Set((existingRows.results ?? []).map((row) => row.source_ref))
+  const currentRefs = new Set<string>()
+  let imported = 0
+  let skippedDuplicates = 0
+
+  for (const item of input.items) {
+    if (existingRefs.has(item.sourceRef) || currentRefs.has(item.sourceRef)) {
+      skippedDuplicates += 1
+      continue
+    }
+    currentRefs.add(item.sourceRef)
+
+    await validateTransactionInput(c.env.DB, bookId, item)
+    const dateKey = toDateKey(item.occurredAt)
+    if (!dateKey) {
+      throw new HttpError(400, 'VALIDATION_ERROR', 'occurredAt 不是合法时间')
+    }
+
+    const transactionId = newId('transaction')
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO transactions (
+          id, book_id, created_by, account_id, transfer_account_id, category_id, type, amount, currency,
+          base_amount, base_currency, occurred_at, date_key, note, merchant_name, source, source_ref, status, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?, 'posted', ?, ?)`
+      ).bind(
+        transactionId,
+        bookId,
+        c.get('currentUser').id,
+        item.accountId,
+        item.type === 'transfer' ? item.transferAccountId : null,
+        item.type === 'transfer' ? null : item.categoryId,
+        item.type,
+        item.amount,
+        item.currency,
+        item.amount,
+        item.currency,
+        item.occurredAt,
+        dateKey,
+        item.note ?? null,
+        item.merchantName ?? null,
+        item.sourceRef,
+        now,
+        now
+      ),
+      ...item.tagIds.map((tagId) =>
+        c.env.DB.prepare(`INSERT INTO transaction_tags (transaction_id, tag_id, book_id) VALUES (?, ?, ?)`).bind(
+          transactionId,
+          tagId,
+          bookId
+        )
+      ),
+      ...balanceStatements(c.env.DB, {
+        type: item.type,
+        accountId: item.accountId,
+        transferAccountId: item.type === 'transfer' ? item.transferAccountId : null,
+        amount: item.amount
+      })
+    )
+    imported += 1
+  }
+
+  if (statements.length > 0) {
+    await c.env.DB.batch(statements)
+  }
+  return ok(c, { imported, skippedDuplicates })
+})
+
+transactionsRoutes.patch('/batch-category', async (c) => {
+  const bookId = c.req.param('bookId')!
+  await requireBookRole(c, bookId, ['owner', 'admin', 'editor'])
+  const input = batchCategorySchema.parse(await c.req.json())
+  const ids = [...new Set(input.transactionIds)]
+  const category = await c.env.DB.prepare(`SELECT id, type FROM categories WHERE id = ? AND book_id = ? AND archived_at IS NULL LIMIT 1`)
+    .bind(input.categoryId, bookId)
+    .first<{ id: string; type: 'income' | 'expense' }>()
+  if (!category) {
+    throw new HttpError(404, 'NOT_FOUND', '分类不存在')
+  }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT id, type
+     FROM transactions
+     WHERE book_id = ? AND deleted_at IS NULL AND type IN ('income', 'expense') AND id IN (${placeholders(ids.length)})`
+  )
+    .bind(bookId, ...ids)
+    .all<{ id: string; type: 'income' | 'expense' }>()
+  const transactions = rows.results ?? []
+  if (transactions.length === 0) {
+    throw new HttpError(404, 'NOT_FOUND', '未找到可修改分类的账单')
+  }
+  if (transactions.some((transaction) => transaction.type !== category.type)) {
+    throw new HttpError(422, 'VALIDATION_ERROR', '所选账单类型必须和目标分类一致')
+  }
+
+  await c.env.DB.prepare(`UPDATE transactions SET category_id = ?, updated_at = ? WHERE book_id = ? AND id IN (${placeholders(transactions.length)})`)
+    .bind(input.categoryId, nowIso(), bookId, ...transactions.map((transaction) => transaction.id))
+    .run()
+
+  return ok(c, { updated: transactions.length })
 })
 
 transactionsRoutes.get('/:transactionId', async (c) => {

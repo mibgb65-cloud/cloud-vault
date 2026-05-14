@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { listBooks } from '@/services/books.api'
+import { archiveBook, createBook, listBooks, updateBook, type CreateBookInput, type UpdateBookInput } from '@/services/books.api'
 import type { Book } from '@/types/domain'
 
 export const useBookStore = defineStore('book', () => {
@@ -24,11 +24,36 @@ export const useBookStore = defineStore('book', () => {
     localStorage.setItem('cloud-vault-book-id', bookId)
   }
 
+  async function createNewBook(input: CreateBookInput) {
+    const result = await createBook(input)
+    currentBookId.value = result.book.id
+    localStorage.setItem('cloud-vault-book-id', result.book.id)
+    await loadBooks()
+    return result.book.id
+  }
+
+  async function updateCurrentBook(bookId: string, input: UpdateBookInput) {
+    await updateBook(bookId, input)
+    await loadBooks()
+  }
+
+  async function archiveExistingBook(bookId: string) {
+    await archiveBook(bookId)
+    if (currentBookId.value === bookId) {
+      currentBookId.value = null
+      localStorage.removeItem('cloud-vault-book-id')
+    }
+    await loadBooks()
+  }
+
   return {
     books,
     currentBookId,
     currentBook,
     loadBooks,
-    setCurrentBook
+    setCurrentBook,
+    createNewBook,
+    updateCurrentBook,
+    archiveExistingBook
   }
 })

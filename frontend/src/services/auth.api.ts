@@ -7,8 +7,23 @@ export interface LoginInput {
 }
 
 export interface RegisterInput extends LoginInput {
-  inviteCode: string
+  inviteCode?: string
   nickname?: string
+}
+
+export interface PublicConfig {
+  appName: string
+  registrationMode: 'invite_only' | 'open' | 'closed'
+  defaultCurrency: string
+  defaultLocale: string
+}
+
+export interface UpdateMeInput {
+  nickname?: string
+  avatarUrl?: string | null
+  defaultCurrency?: string
+  locale?: string
+  timezone?: string
 }
 
 export function login(input: LoginInput) {
@@ -17,6 +32,10 @@ export function login(input: LoginInput) {
 
 export function register(input: RegisterInput) {
   return http.post<{ user: User; defaultBookId: string }>('/auth/register', input)
+}
+
+export function getPublicConfig() {
+  return http.get<PublicConfig>('/public/config')
 }
 
 export function logout() {
@@ -29,4 +48,12 @@ export function logoutOtherDevices() {
 
 export function getMe() {
   return http.get<{ user: User }>('/me')
+}
+
+export function updateMe(input: UpdateMeInput) {
+  return http.patch<{ user: User }>('/me', input)
+}
+
+export function changePassword(input: { currentPassword: string; newPassword: string }) {
+  return http.patch<{ updated: boolean }>('/me/password', input)
 }

@@ -1,32 +1,55 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ArchiveRestore, CalendarDays, Edit3, Filter, Search, Trash2, WalletCards, X } from 'lucide-vue-next'
+import { ArchiveRestore, CalendarDays, Download, Edit3, Filter, Search, Tags, Trash2, Upload, WalletCards, X } from 'lucide-vue-next'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import { listAccounts } from '@/services/accounts.api'
 import { listCategories } from '@/services/categories.api'
-import { createTransaction, deleteTransaction, listTransactions, restoreTransaction, updateTransaction } from '@/services/transactions.api'
+import { listTags } from '@/services/tags.api'
+import {
+  batchDeleteTransactions,
+  batchUpdateTransactionCategory,
+  createTransaction,
+  deleteTransaction,
+  importTransactions,
+  listTransactions,
+  restoreTransaction,
+  updateTransaction
+} from '@/services/transactions.api'
 import { useBookStore } from '@/stores/book.store'
 import { dateTimeInputToIso, dateTimeInputValue, dateTimeInputValueFromIso } from '@/utils/date'
 import { formatMoney, parseMoneyToMinorUnit } from '@/utils/money'
-import type { Account, Category, Transaction, TransactionType } from '@/types/domain'
+import { parseStatementFile, type StatementImportDraft } from '@/utils/statementImport'
+import type { Account, Category, Tag, Transaction, TransactionType } from '@/types/domain'
 
 const bookStore = useBookStore()
 const accounts = ref<Account[]>([])
 const categories = ref<Category[]>([])
+const tags = ref<Tag[]>([])
 const transactions = ref<Transaction[]>([])
 const selectedTransactionId = ref<string | null>(null)
+const selectedIds = ref<string[]>([])
 const editingId = ref<string | null>(null)
 const loading = ref(false)
 const saving = ref(false)
+const exporting = ref(false)
+const importSaving = ref(false)
+const hasMore = ref(false)
+const currentPage = ref(1)
 const error = ref('')
 const success = ref('')
+const importDrafts = ref<StatementImportDraft[]>([])
+const importFileName = ref('')
+const importAccountId = ref('')
+const importExpenseCategoryId = ref('')
+const importIncomeCategoryId = ref('')
 const filters = ref({
   keyword: '',
   type: '',
   accountId: '',
   categoryId: '',
+  tagId: '',
   dateFrom: '',
   dateTo: '',
   includeDeleted: false
@@ -39,8 +62,11 @@ const form = ref({
   categoryId: '',
   date: dateTimeInputValue(),
   note: '',
-  merchantName: ''
+  merchantName: '',
+  tagIds: [] as string[]
 })
+const batchCategoryId = ref('')
+const pageSize = 50
 
 const typeOptions = [
   { label: '支出', value: 'expense' },
@@ -55,8 +81,21 @@ const categoryOptions = computed(() =>
     .filter((category) => category.type === form.value.type)
     .map((category) => ({ label: category.name, value: category.id }))
 )
+const importExpenseCategoryOptions = computed(() =>
+  categories.value.filter((category) => category.type === 'expense').map((category) => ({ label: category.name, value: category.id }))
+)
+const importIncomeCategoryOptions = computed(() =>
+  categories.value.filter((category) => category.type === 'income').map((category) => ({ label: category.name, value: category.id }))
+)
 const filterCategoryOptions = computed(() => [
   { label: '全部分类', value: '' },
+  ...categories.value.map((category) => ({ label: `${category.type === 'expense' ? '支出' : '收入'} / ${category.name}`, value: category.id }))
+])
+const tagOptions = computed(() => tags.value.map((tag) => ({ label: tag.name, value: tag.id })))
+const filterTagOptions = computed(() => [{ label: '全部标签', value: '' }, ...tagOptions.value])
+const tagMap = computed(() => new Map(tags.value.map((tag) => [tag.id, tag])))
+const batchCategoryOptions = computed(() => [
+  { label: '选择目标分类', value: '' },
   ...categories.value.map((category) => ({ label: `${category.type === 'expense' ? '支出' : '收入'} / ${category.name}`, value: category.id }))
 ])
 const activeTransactions = computed(() => transactions.value.filter((item) => !item.deletedAt))
@@ -67,51 +106,84 @@ const visibleTransferCount = computed(() => activeTransactions.value.filter((ite
 const currency = computed(() => bookStore.currentBook?.defaultCurrency || 'CNY')
 const formTitle = computed(() => (editingId.value ? '编辑账单' : '新建账单'))
 const selectedTransaction = computed(() => transactions.value.find((item) => item.id === selectedTransactionId.value) ?? null)
+const selectedCount = computed(() => selectedIds.value.length)
+const selectedTransactions = computed(() => transactions.value.filter((item) => selectedIds.value.includes(item.id)))
+const selectedNonTransferCount = computed(() => selectedTransactions.value.filter((item) => item.type !== 'transfer' && !item.deletedAt).length)
+const canBatchDelete = computed(() => selectedTransactions.value.some((item) => !item.deletedAt))
+const importableDrafts = computed(() => importDrafts.value.filter((draft) => draft.valid))
+const skippedImportCount = computed(() => importDrafts.value.length - importableDrafts.value.length)
 
-async function load() {
+function buildTransactionParams(page = 1, size = pageSize) {
+  const params = new URLSearchParams()
+  if (filters.value.keyword.trim()) {
+    params.set('keyword', filters.value.keyword.trim())
+  }
+  if (filters.value.type) {
+    params.set('type', filters.value.type)
+  }
+  if (filters.value.accountId) {
+    params.set('accountId', filters.value.accountId)
+  }
+  if (filters.value.categoryId) {
+    params.set('categoryId', filters.value.categoryId)
+  }
+  if (filters.value.tagId) {
+    params.set('tagId', filters.value.tagId)
+  }
+  if (filters.value.dateFrom) {
+    params.set('dateFrom', filters.value.dateFrom)
+  }
+  if (filters.value.dateTo) {
+    params.set('dateTo', filters.value.dateTo)
+  }
+  if (filters.value.includeDeleted) {
+    params.set('includeDeleted', 'true')
+  }
+  params.set('page', String(page))
+  params.set('pageSize', String(size))
+  return params
+}
+
+async function load(page = 1, append = false) {
   if (!bookStore.currentBookId) {
     return
   }
   loading.value = true
   try {
-    const params = new URLSearchParams()
-    if (filters.value.keyword.trim()) {
-      params.set('keyword', filters.value.keyword.trim())
-    }
-    if (filters.value.type) {
-      params.set('type', filters.value.type)
-    }
-    if (filters.value.accountId) {
-      params.set('accountId', filters.value.accountId)
-    }
-    if (filters.value.categoryId) {
-      params.set('categoryId', filters.value.categoryId)
-    }
-    if (filters.value.dateFrom) {
-      params.set('dateFrom', filters.value.dateFrom)
-    }
-    if (filters.value.dateTo) {
-      params.set('dateTo', filters.value.dateTo)
-    }
-    if (filters.value.includeDeleted) {
-      params.set('includeDeleted', 'true')
-    }
-    params.set('pageSize', '100')
-
     const previousSelection = selectedTransactionId.value
-    const [accountResult, expenseCategories, incomeCategories, transactionResult] = await Promise.all([
+    const [accountResult, expenseCategories, incomeCategories, tagResult, transactionResult] = await Promise.all([
       listAccounts(bookStore.currentBookId),
       listCategories(bookStore.currentBookId, 'expense'),
       listCategories(bookStore.currentBookId, 'income'),
-      listTransactions(bookStore.currentBookId, params)
+      listTags(bookStore.currentBookId),
+      listTransactions(bookStore.currentBookId, buildTransactionParams(page))
     ])
     accounts.value = accountResult.items
     categories.value = [...expenseCategories.items, ...incomeCategories.items]
-    transactions.value = transactionResult.items
-    selectedTransactionId.value = transactionResult.items.some((item) => item.id === previousSelection) ? previousSelection : null
+    tags.value = tagResult.items
+    transactions.value = append ? [...transactions.value, ...transactionResult.items] : transactionResult.items
+    currentPage.value = page
+    hasMore.value = transactionResult.pageInfo.hasMore
+    selectedTransactionId.value = transactions.value.some((item) => item.id === previousSelection) ? previousSelection : null
+    if (!append) {
+      selectedIds.value = []
+    }
+    ensureImportDefaults()
     ensureFormDefaults()
   } finally {
     loading.value = false
+  }
+}
+
+function ensureImportDefaults() {
+  if (!accounts.value.some((account) => account.id === importAccountId.value)) {
+    importAccountId.value = accounts.value[0]?.id || ''
+  }
+  if (!importExpenseCategoryOptions.value.some((option) => option.value === importExpenseCategoryId.value)) {
+    importExpenseCategoryId.value = importExpenseCategoryOptions.value[0]?.value || ''
+  }
+  if (!importIncomeCategoryOptions.value.some((option) => option.value === importIncomeCategoryId.value)) {
+    importIncomeCategoryId.value = importIncomeCategoryOptions.value[0]?.value || ''
   }
 }
 
@@ -143,7 +215,8 @@ function resetForm() {
     categoryId: categories.value.find((category) => category.type === 'expense')?.id || '',
     date: dateTimeInputValue(),
     note: '',
-    merchantName: ''
+    merchantName: '',
+    tagIds: []
   }
   error.value = ''
   ensureFormDefaults()
@@ -160,7 +233,8 @@ function edit(item: Transaction) {
     categoryId: item.categoryId || '',
     date: dateTimeInputValueFromIso(item.occurredAt),
     note: item.note || '',
-    merchantName: item.merchantName || ''
+    merchantName: item.merchantName || '',
+    tagIds: [...item.tagIds]
   }
   error.value = ''
   success.value = ''
@@ -221,6 +295,234 @@ function selectTransaction(item: Transaction) {
   selectedTransactionId.value = item.id
 }
 
+function toggleFormTag(tagId: string) {
+  form.value.tagIds = form.value.tagIds.includes(tagId)
+    ? form.value.tagIds.filter((id) => id !== tagId)
+    : [...form.value.tagIds, tagId]
+}
+
+function transactionTagNames(item: Transaction) {
+  return item.tagIds.map((tagId) => tagMap.value.get(tagId)?.name).filter(Boolean) as string[]
+}
+
+function isSelected(transactionId: string) {
+  return selectedIds.value.includes(transactionId)
+}
+
+function toggleSelected(transactionId: string) {
+  selectedIds.value = isSelected(transactionId)
+    ? selectedIds.value.filter((id) => id !== transactionId)
+    : [...selectedIds.value, transactionId]
+}
+
+function toggleSelectLoaded() {
+  const selectableIds = transactions.value.filter((item) => !item.deletedAt).map((item) => item.id)
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedIds.value.includes(id))
+  selectedIds.value = allSelected ? [] : selectableIds
+}
+
+function applyFilters() {
+  void load(1)
+}
+
+async function loadMore() {
+  if (loading.value || !hasMore.value) {
+    return
+  }
+  await load(currentPage.value + 1, true)
+}
+
+function csvEscape(value: unknown) {
+  const text = value == null ? '' : String(value)
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
+}
+
+function downloadCsv(rows: Transaction[]) {
+  const headers = ['日期', '类型', '金额', '币种', '账户', '转入账户', '分类', '标签', '商户', '备注']
+  const body = rows.map((item) =>
+    [
+      item.occurredAt,
+      typeLabel(item.type),
+      (item.amount / 100).toFixed(2),
+      item.currency,
+      item.accountName || '',
+      item.transferAccountName || '',
+      item.categoryName || '',
+      transactionTagNames(item).join('; '),
+      item.merchantName || '',
+      item.note || ''
+    ].map(csvEscape)
+  )
+  const csv = [headers.map(csvEscape), ...body].map((row) => row.join(',')).join('\r\n')
+  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `cloud-vault-transactions-${new Date().toISOString().slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+async function exportCsv() {
+  if (!bookStore.currentBookId || exporting.value) {
+    return
+  }
+
+  exporting.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    const rows: Transaction[] = []
+    let page = 1
+    let more = true
+    while (more) {
+      const result = await listTransactions(bookStore.currentBookId, buildTransactionParams(page, 100))
+      rows.push(...result.items)
+      more = result.pageInfo.hasMore
+      page += 1
+    }
+    downloadCsv(rows)
+    success.value = `已导出 ${rows.length} 条账单`
+  } catch (exportError) {
+    error.value = exportError instanceof Error ? exportError.message : '导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
+
+function buildImportContext() {
+  return {
+    accounts: accounts.value,
+    categories: categories.value,
+    defaultAccountId: importAccountId.value,
+    defaultExpenseCategoryId: importExpenseCategoryId.value,
+    defaultIncomeCategoryId: importIncomeCategoryId.value
+  }
+}
+
+function clearImportPreview() {
+  importDrafts.value = []
+  importFileName.value = ''
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) {
+    return
+  }
+
+  ensureImportDefaults()
+  if (!importAccountId.value || !importExpenseCategoryId.value || !importIncomeCategoryId.value) {
+    error.value = '请先创建账户和收入/支出分类'
+    return
+  }
+
+  importSaving.value = true
+  error.value = ''
+  success.value = ''
+  importFileName.value = file.name
+  importDrafts.value = []
+  try {
+    importDrafts.value = await parseStatementFile(file, buildImportContext())
+    success.value = `已解析 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行`
+  } catch (importError) {
+    clearImportPreview()
+    error.value = importError instanceof Error ? importError.message : '解析账单失败'
+  } finally {
+    importSaving.value = false
+  }
+}
+
+async function submitImport() {
+  if (!bookStore.currentBookId || importSaving.value) {
+    return
+  }
+  const drafts = importableDrafts.value
+  if (drafts.length === 0) {
+    error.value = '没有可导入的账单'
+    return
+  }
+
+  importSaving.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    let imported = 0
+    let skippedDuplicates = 0
+    for (let index = 0; index < drafts.length; index += 50) {
+      const result = await importTransactions(
+        bookStore.currentBookId,
+        drafts.slice(index, index + 50).map((draft) => ({
+          type: draft.type,
+          amount: draft.amount,
+          accountId: draft.accountId,
+          transferAccountId: null,
+          categoryId: draft.categoryId,
+          currency: currency.value,
+          occurredAt: draft.occurredAt,
+          note: draft.note,
+          merchantName: draft.merchantName,
+          sourceRef: draft.sourceRef,
+          tagIds: []
+        }))
+      )
+      imported += result.imported
+      skippedDuplicates += result.skippedDuplicates
+    }
+    success.value = `已导入 ${imported} 条账单${skippedDuplicates ? `，重复跳过 ${skippedDuplicates} 条` : ''}${skippedImportCount.value ? `，无效跳过 ${skippedImportCount.value} 条` : ''}`
+    clearImportPreview()
+    await load(1)
+  } catch (importError) {
+    error.value = importError instanceof Error ? importError.message : '导入账单失败'
+  } finally {
+    importSaving.value = false
+  }
+}
+
+async function submitBatchDelete() {
+  if (!bookStore.currentBookId || !canBatchDelete.value || !window.confirm(`确认删除选中的 ${selectedCount.value} 条账单？`)) {
+    return
+  }
+
+  saving.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    const result = await batchDeleteTransactions(bookStore.currentBookId, selectedIds.value)
+    selectedIds.value = []
+    success.value = `已删除 ${result.deleted} 条账单`
+    await load(1)
+  } catch (batchError) {
+    error.value = batchError instanceof Error ? batchError.message : '批量删除失败'
+  } finally {
+    saving.value = false
+  }
+}
+
+async function submitBatchCategory() {
+  if (!bookStore.currentBookId || !batchCategoryId.value || selectedNonTransferCount.value === 0) {
+    error.value = '请选择非转账账单和目标分类'
+    return
+  }
+
+  saving.value = true
+  error.value = ''
+  success.value = ''
+  try {
+    const result = await batchUpdateTransactionCategory(bookStore.currentBookId, selectedIds.value, batchCategoryId.value)
+    selectedIds.value = []
+    batchCategoryId.value = ''
+    success.value = `已更新 ${result.updated} 条账单分类`
+    await load(1)
+  } catch (batchError) {
+    error.value = batchError instanceof Error ? batchError.message : '批量修改分类失败'
+  } finally {
+    saving.value = false
+  }
+}
+
 async function submit() {
   if (!bookStore.currentBookId) {
     return
@@ -259,7 +561,7 @@ async function submit() {
       occurredAt: dateTimeInputToIso(form.value.date),
       note: form.value.note || null,
       merchantName: form.value.merchantName || null,
-      tagIds: []
+      tagIds: form.value.tagIds
     }
     const result = editingId.value
       ? await updateTransaction(bookStore.currentBookId, editingId.value, input)
@@ -318,11 +620,12 @@ function clearFilters() {
     type: '',
     accountId: '',
     categoryId: '',
+    tagId: '',
     dateFrom: '',
     dateTo: '',
     includeDeleted: false
   }
-  void load()
+  void load(1)
 }
 
 watch(
@@ -334,7 +637,7 @@ watch(
   () => ensureFormDefaults()
 )
 onMounted(load)
-watch(() => bookStore.currentBookId, load)
+watch(() => bookStore.currentBookId, () => load(1))
 </script>
 
 <template>
@@ -370,7 +673,7 @@ watch(() => bookStore.currentBookId, load)
           <Filter class="h-4 w-4 text-[var(--app-muted)]" />
           <h2 class="text-sm font-extrabold">筛选</h2>
         </div>
-        <form class="space-y-2 overflow-y-auto p-3 xl:max-h-[calc(100vh-20rem)]" @submit.prevent="load">
+        <form class="space-y-2 overflow-y-auto p-3 xl:max-h-[calc(100vh-20rem)]" @submit.prevent="applyFilters">
           <label class="flex h-10 items-center gap-2 border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-[var(--app-muted)]">
             <Search class="h-4 w-4" />
             <input
@@ -382,6 +685,7 @@ watch(() => bookStore.currentBookId, load)
           <BaseSelect v-model="filters.type" :options="filterTypeOptions" />
           <BaseSelect v-model="filters.accountId" :options="filterAccountOptions" />
           <BaseSelect v-model="filters.categoryId" :options="filterCategoryOptions" />
+          <BaseSelect v-model="filters.tagId" :options="filterTagOptions" />
           <div class="grid grid-cols-2 gap-2">
             <BaseInput v-model="filters.dateFrom" type="date" />
             <BaseInput v-model="filters.dateTo" type="date" />
@@ -394,7 +698,108 @@ watch(() => bookStore.currentBookId, load)
             <BaseButton type="submit" :disabled="loading">应用</BaseButton>
             <BaseButton variant="ghost" @click="clearFilters">清空</BaseButton>
           </div>
+          <BaseButton variant="secondary" class="w-full" :disabled="exporting" @click="exportCsv">
+            <Download class="h-4 w-4" />
+            {{ exporting ? '导出中' : '导出 CSV' }}
+          </BaseButton>
         </form>
+      </section>
+
+      <section class="border-t border-[var(--app-border)] p-3">
+        <div class="mb-2 flex items-center gap-2">
+          <Upload class="h-4 w-4 text-[var(--app-muted)]" />
+          <h2 class="text-sm font-extrabold">导入账单</h2>
+        </div>
+        <div class="grid gap-2">
+          <label class="grid gap-1">
+            <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">default account</span>
+            <BaseSelect v-model="importAccountId" :options="accountOptions" placement="top" />
+          </label>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="grid gap-1">
+              <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">expense</span>
+              <BaseSelect v-model="importExpenseCategoryId" :options="importExpenseCategoryOptions" placement="top" />
+            </label>
+            <label class="grid gap-1">
+              <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">income</span>
+              <BaseSelect v-model="importIncomeCategoryId" :options="importIncomeCategoryOptions" placement="top" />
+            </label>
+          </div>
+          <label
+            class="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-sm font-bold transition hover:-translate-y-px hover:bg-[var(--app-subtle)]"
+            :class="{ 'pointer-events-none opacity-50': importSaving }"
+          >
+            <Upload class="h-4 w-4" />
+            {{ importSaving ? '处理中' : '选择支付宝 CSV / 微信 XLSX' }}
+            <input class="sr-only" type="file" accept=".csv,.xlsx" :disabled="importSaving" @change="handleImportFile" />
+          </label>
+
+          <div v-if="importDrafts.length > 0" class="border border-[var(--app-border-soft)] bg-[var(--app-subtle)]">
+            <div class="grid grid-cols-3 border-b border-[var(--app-border-soft)] text-center">
+              <div class="p-2">
+                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">文件</p>
+                <p class="mt-1 truncate text-xs font-extrabold">{{ importFileName }}</p>
+              </div>
+              <div class="border-l border-[var(--app-border-soft)] p-2">
+                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">可导入</p>
+                <p class="mt-1 font-mono text-sm font-extrabold text-income">{{ importableDrafts.length }}</p>
+              </div>
+              <div class="border-l border-[var(--app-border-soft)] p-2">
+                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">跳过</p>
+                <p class="mt-1 font-mono text-sm font-extrabold text-[var(--app-muted)]">{{ skippedImportCount }}</p>
+              </div>
+            </div>
+            <div class="max-h-56 overflow-y-auto">
+              <div
+                v-for="draft in importDrafts.slice(0, 8)"
+                :key="draft.id"
+                class="grid grid-cols-[1fr_5.5rem] gap-2 border-b border-[var(--app-border-soft)] px-2 py-2 last:border-b-0"
+              >
+                <div class="min-w-0">
+                  <p class="truncate text-xs font-extrabold">{{ draft.merchantName || draft.rawCategory || '账单' }}</p>
+                  <p class="mt-1 truncate font-mono text-[10px] font-bold text-[var(--app-muted)]">
+                    {{ typeLabel(draft.type) }} / {{ draft.reason || draft.rawStatus || '可导入' }}
+                  </p>
+                </div>
+                <p
+                  class="truncate text-right font-mono text-xs font-extrabold"
+                  :class="{ 'text-expense': draft.type === 'expense', 'text-income': draft.type === 'income', 'text-[var(--app-muted)]': !draft.valid }"
+                >
+                  {{ amountPrefix(draft.type) }}{{ formatMoney(draft.amount, currency) }}
+                </p>
+              </div>
+              <p v-if="importDrafts.length > 8" class="px-2 py-2 text-center text-[11px] font-bold text-[var(--app-muted)]">
+                另有 {{ importDrafts.length - 8 }} 行
+              </p>
+            </div>
+            <div class="grid grid-cols-2 gap-2 border-t border-[var(--app-border-soft)] p-2">
+              <BaseButton variant="secondary" :disabled="importSaving || importableDrafts.length === 0" @click="submitImport">
+                导入 {{ importableDrafts.length }}
+              </BaseButton>
+              <BaseButton variant="ghost" :disabled="importSaving" @click="clearImportPreview">清除</BaseButton>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="border-t border-[var(--app-border)] p-3">
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <h2 class="text-sm font-extrabold">批量操作</h2>
+          <p class="font-mono text-xs font-bold text-[var(--app-muted)]">已选 {{ selectedCount }}</p>
+        </div>
+        <div class="grid gap-2">
+          <BaseButton variant="secondary" :disabled="transactions.length === 0" @click="toggleSelectLoaded">
+            {{ selectedCount > 0 ? '取消选择' : '选择当前页' }}
+          </BaseButton>
+          <BaseSelect v-model="batchCategoryId" :options="batchCategoryOptions" />
+          <BaseButton variant="secondary" :disabled="saving || selectedNonTransferCount === 0 || !batchCategoryId" @click="submitBatchCategory">
+            批量改分类
+          </BaseButton>
+          <BaseButton variant="ghost" :disabled="saving || !canBatchDelete" @click="submitBatchDelete">
+            <Trash2 class="h-4 w-4" />
+            批量删除
+          </BaseButton>
+        </div>
       </section>
     </aside>
 
@@ -412,10 +817,17 @@ watch(() => bookStore.currentBookId, load)
           v-for="item in transactions"
           :key="item.id"
           type="button"
-          class="grid w-full cursor-pointer grid-cols-[5.75rem_minmax(0,1fr)_8rem] items-center gap-3 border-b border-[var(--app-border-soft)] px-3 py-2 text-left transition hover:bg-[var(--app-subtle)]"
+          class="grid w-full cursor-pointer grid-cols-[2rem_5.75rem_minmax(0,1fr)_8rem] items-center gap-3 border-b border-[var(--app-border-soft)] px-3 py-2 text-left transition hover:bg-[var(--app-subtle)]"
           :class="{ 'bg-[var(--app-subtle)]': selectedTransaction?.id === item.id, 'opacity-60': item.deletedAt }"
           @click="selectTransaction(item)"
         >
+          <span
+            class="flex h-6 w-6 items-center justify-center border border-[var(--app-border)] bg-[var(--app-surface)] font-mono text-[10px] font-extrabold"
+            :class="{ 'bg-[var(--app-inverse)] text-[var(--app-inverse-text)]': isSelected(item.id) }"
+            @click.stop="toggleSelected(item.id)"
+          >
+            {{ isSelected(item.id) ? '✓' : '' }}
+          </span>
           <span class="min-w-0">
             <span class="block font-mono text-xs font-extrabold">{{ formatOccurrenceShort(item.occurredAt) }}</span>
             <span class="mt-1 inline-flex border border-[var(--app-border-soft)] px-1.5 py-0.5 text-[10px] font-extrabold text-[var(--app-muted)]">
@@ -431,6 +843,7 @@ watch(() => bookStore.currentBookId, load)
               {{ formatOccurrenceMinute(item.occurredAt) }} / {{ item.accountName || '账户' }}
               <span v-if="item.transferAccountName"> -> {{ item.transferAccountName }}</span>
               <span v-else-if="item.categoryName"> / {{ item.categoryName }}</span>
+              <span v-if="transactionTagNames(item).length"> / #{{ transactionTagNames(item).join(' #') }}</span>
             </span>
           </span>
           <span class="min-w-0 text-right">
@@ -444,6 +857,11 @@ watch(() => bookStore.currentBookId, load)
           </span>
         </button>
         <p v-if="!loading && transactions.length === 0" class="px-3 py-10 text-center text-sm font-bold text-[var(--app-muted)]">暂无账单</p>
+        <div v-if="transactions.length > 0" class="border-t border-[var(--app-border-soft)] p-3">
+          <BaseButton variant="secondary" class="w-full" :disabled="loading || !hasMore" @click="loadMore">
+            {{ hasMore ? loading ? '加载中' : '加载更多' : '已加载全部' }}
+          </BaseButton>
+        </div>
       </div>
     </section>
 
@@ -507,6 +925,26 @@ watch(() => bookStore.currentBookId, load)
               <BaseSelect v-if="form.type === 'transfer'" v-model="form.transferAccountId" :options="accountOptions" />
               <BaseSelect v-else v-model="form.categoryId" :options="categoryOptions" />
             </label>
+          </section>
+
+          <section class="space-y-2 border border-[var(--app-border-soft)] p-3">
+            <div class="flex items-center gap-2">
+              <Tags class="h-4 w-4 text-[var(--app-muted)]" />
+              <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">tags</span>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="tag in tags"
+                :key="tag.id"
+                type="button"
+                class="h-8 cursor-pointer border border-[var(--app-border-soft)] px-2 text-xs font-extrabold transition hover:border-[var(--app-border)]"
+                :class="{ 'border-[var(--app-border)] bg-[var(--app-inverse)] text-[var(--app-inverse-text)]': form.tagIds.includes(tag.id) }"
+                @click="toggleFormTag(tag.id)"
+              >
+                {{ tag.name }}
+              </button>
+              <p v-if="tags.length === 0" class="text-xs font-bold text-[var(--app-muted)]">暂无标签，可在设置页创建。</p>
+            </div>
           </section>
 
           <section class="space-y-3 border border-[var(--app-border-soft)] p-3">
@@ -581,7 +1019,9 @@ watch(() => bookStore.currentBookId, load)
                 </div>
                 <div class="bg-[var(--app-surface)] p-3">
                   <p class="text-[10px] font-bold text-[var(--app-muted)]">标签</p>
-                  <p class="mt-1 truncate text-sm font-extrabold">{{ selectedTransaction.tagIds.length }} 个</p>
+                  <p class="mt-1 truncate text-sm font-extrabold">
+                    {{ transactionTagNames(selectedTransaction).length ? transactionTagNames(selectedTransaction).join(' / ') : '-' }}
+                  </p>
                 </div>
               </div>
               <div class="grid grid-cols-2 gap-2">

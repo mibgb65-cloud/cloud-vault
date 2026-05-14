@@ -15,6 +15,36 @@ import { requireAuth } from '../middlewares/auth.middleware'
 import { createUserSession, removeOtherUserSessions, removeUserSession } from '../services/session.service'
 
 export const authRoutes = new Hono<{ Bindings: Env; Variables: AppVariables }>()
+type RegistrationMode = 'invite_only' | 'open' | 'closed'
+type InviteRow = {
+  id: string
+  invite_role: 'admin' | 'user'
+  allowed_email: string | null
+  max_uses: number
+  used_count: number
+  expires_at: string | null
+}
+
+async function getRegistrationMode(env: Env): Promise<RegistrationMode> {
+  const setting = await env.DB.prepare(`SELECT value FROM system_settings WHERE key = 'registration_mode' LIMIT 1`).first<{
+    value: string
+  }>()
+  const mode = setting?.value || env.registration_mode || 'invite_only'
+  return mode === 'open' || mode === 'closed' || mode === 'invite_only' ? mode : 'invite_only'
+}
+
+async function findActiveInvite(env: Env, code: string) {
+  const inviteSecret = env.invite_hash_secret || env.jwt_secret
+  const codeHash = await hashInviteCode(code, inviteSecret)
+  return env.DB.prepare(
+    `SELECT id, invite_role, allowed_email, max_uses, used_count, expires_at
+     FROM registration_invites
+     WHERE code_hash = ? AND status = 'active'
+     LIMIT 1`
+  )
+    .bind(codeHash)
+    .first<InviteRow>()
+}
 
 authRoutes.post('/register', async (c) => {
   const clientIp = getClientIp(c)
@@ -23,36 +53,30 @@ authRoutes.post('/register', async (c) => {
   const input = registerSchema.parse(await c.req.json())
   const email = input.email.trim().toLowerCase()
   const now = nowIso()
-  const inviteSecret = c.env.invite_hash_secret || c.env.jwt_secret
-  const codeHash = await hashInviteCode(input.inviteCode, inviteSecret)
+  const registrationMode = await getRegistrationMode(c.env)
 
-  const invite = await c.env.DB.prepare(
-    `SELECT id, invite_role, allowed_email, max_uses, used_count, expires_at
-     FROM registration_invites
-     WHERE code_hash = ? AND status = 'active'
-     LIMIT 1`
-  )
-    .bind(codeHash)
-    .first<{
-      id: string
-      invite_role: 'admin' | 'user'
-      allowed_email: string | null
-      max_uses: number
-      used_count: number
-      expires_at: string | null
-    }>()
+  if (registrationMode === 'closed') {
+    throw new HttpError(403, 'REGISTRATION_CLOSED', '当前已关闭注册')
+  }
+  if (registrationMode === 'invite_only' && !input.inviteCode) {
+    throw new HttpError(422, 'INVALID_INVITE_CODE', '请填写邀请码')
+  }
 
-  if (!invite) {
-    throw new HttpError(422, 'INVALID_INVITE_CODE', '邀请码无效')
-  }
-  if (invite.expires_at && invite.expires_at <= now) {
-    throw new HttpError(422, 'INVITE_CODE_EXPIRED', '邀请码已过期')
-  }
-  if (invite.used_count >= invite.max_uses) {
-    throw new HttpError(422, 'INVITE_CODE_USED_UP', '邀请码已用完')
-  }
-  if (invite.allowed_email && invite.allowed_email.toLowerCase() !== email) {
-    throw new HttpError(422, 'INVITE_EMAIL_MISMATCH', '邀请码限定邮箱不匹配')
+  let invite: InviteRow | null = null
+  if (input.inviteCode) {
+    invite = await findActiveInvite(c.env, input.inviteCode)
+    if (!invite) {
+      throw new HttpError(422, 'INVALID_INVITE_CODE', '邀请码无效')
+    }
+    if (invite.expires_at && invite.expires_at <= now) {
+      throw new HttpError(422, 'INVITE_CODE_EXPIRED', '邀请码已过期')
+    }
+    if (invite.used_count >= invite.max_uses) {
+      throw new HttpError(422, 'INVITE_CODE_USED_UP', '邀请码已用完')
+    }
+    if (invite.allowed_email && invite.allowed_email.toLowerCase() !== email) {
+      throw new HttpError(422, 'INVITE_EMAIL_MISMATCH', '邀请码限定邮箱不匹配')
+    }
   }
 
   const existingUser = await c.env.DB.prepare(`SELECT id FROM users WHERE email = ? LIMIT 1`).bind(email).first()
@@ -79,12 +103,16 @@ authRoutes.post('/register', async (c) => {
         system_role, registration_invite_id, created_at, updated_at
       )
       VALUES (?, ?, ?, ?, ?, ?, 'Asia/Shanghai', ?, ?, ?, ?)`
-    ).bind(userId, email, passwordHash, nickname, defaultCurrency, defaultLocale, invite.invite_role, invite.id, now, now),
-    c.env.DB.prepare(
-      `UPDATE registration_invites
-       SET used_count = used_count + 1, updated_at = ?
-       WHERE id = ? AND used_count < max_uses`
-    ).bind(now, invite.id),
+    ).bind(userId, email, passwordHash, nickname, defaultCurrency, defaultLocale, invite?.invite_role ?? 'user', invite?.id ?? null, now, now),
+    ...(invite
+      ? [
+          c.env.DB.prepare(
+            `UPDATE registration_invites
+             SET used_count = used_count + 1, updated_at = ?
+             WHERE id = ? AND used_count < max_uses`
+          ).bind(now, invite.id)
+        ]
+      : []),
     ...statements
   ])
 
@@ -95,7 +123,7 @@ authRoutes.post('/register', async (c) => {
         id: userId,
         email,
         nickname,
-        systemRole: invite.invite_role
+        systemRole: invite?.invite_role ?? 'user'
       },
       defaultBookId: bookId
     },

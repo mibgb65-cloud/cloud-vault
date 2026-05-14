@@ -94,6 +94,7 @@ export function toTransaction(row: Record<string, unknown>, tagIds: string[] = [
     note: row.note ? String(row.note) : null,
     merchantName: row.merchant_name ? String(row.merchant_name) : null,
     source: String(row.source),
+    sourceRef: row.source_ref ? String(row.source_ref) : null,
     status: String(row.status),
     accountName: row.account_name ? String(row.account_name) : undefined,
     transferAccountName: row.transfer_account_name ? String(row.transfer_account_name) : undefined,

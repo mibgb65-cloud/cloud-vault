@@ -20,6 +20,7 @@ export interface Book {
   defaultCurrency: string
   icon?: string | null
   role?: string
+  archivedAt?: string | null
 }
 
 export interface Account {
@@ -71,6 +72,7 @@ export interface Transaction {
   dateKey: string
   note: string | null
   merchantName: string | null
+  sourceRef?: string | null
   accountName?: string
   transferAccountName?: string
   categoryName?: string
