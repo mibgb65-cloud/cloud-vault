@@ -257,7 +257,7 @@ async function parseAlipayCsv(file: File, context: StatementImportContext) {
         merchantName: record['交易对方'],
         status: record['交易状态'],
         sourceRef: normalizeSourceRef('alipay', orderNo),
-        noteParts: [record['商品说明'], record['备注'], orderNo ? `支付宝订单 ${orderNo}` : '']
+        noteParts: [record['商品说明'], record['备注']]
       },
       context
     )
@@ -402,7 +402,7 @@ async function parseWechatXlsx(file: File, context: StatementImportContext) {
         merchantName: record['交易对方'],
         status: record['当前状态'],
         sourceRef: normalizeSourceRef('wechat', orderNo),
-        noteParts: [record['商品'], record['备注'], orderNo ? `微信单号 ${orderNo}` : '']
+        noteParts: [record['商品'], record['备注']]
       },
       context
     )

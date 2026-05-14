@@ -324,6 +324,10 @@ function transactionTagNames(item: Transaction) {
   return item.tagIds.map((tagId) => tagMap.value.get(tagId)?.name).filter(Boolean) as string[]
 }
 
+function orderNumber(item: Transaction) {
+  return item.sourceRef?.replace(/^(alipay|wechat):/, '') || ''
+}
+
 function isSelected(transactionId: string) {
   return selectedIds.value.includes(transactionId)
 }
@@ -357,7 +361,7 @@ function csvEscape(value: unknown) {
 }
 
 function downloadCsv(rows: Transaction[]) {
-  const headers = ['日期', '类型', '金额', '币种', '账户', '转入账户', '分类', '标签', '商户', '备注']
+  const headers = ['日期', '类型', '金额', '币种', '账户', '转入账户', '分类', '标签', '商户', '订单号', '备注']
   const body = rows.map((item) =>
     [
       item.occurredAt,
@@ -369,6 +373,7 @@ function downloadCsv(rows: Transaction[]) {
       item.categoryName || '',
       transactionTagNames(item).join('; '),
       item.merchantName || '',
+      orderNumber(item),
       item.note || ''
     ].map(csvEscape)
   )
@@ -1075,10 +1080,14 @@ watch(() => bookStore.currentBookId, () => load(1))
                 <p class="text-[10px] font-bold text-[var(--app-muted)]">备注</p>
                 <p class="mt-2 min-h-24 whitespace-pre-wrap break-words text-sm font-bold leading-6">{{ selectedTransaction.note || '未填写备注' }}</p>
               </div>
-              <div class="grid grid-cols-2 gap-px bg-[var(--app-border-soft)] p-px">
+              <div class="grid grid-cols-3 gap-px bg-[var(--app-border-soft)] p-px">
                 <div class="bg-[var(--app-surface)] p-3">
                   <p class="text-[10px] font-bold text-[var(--app-muted)]">商户</p>
                   <p class="mt-1 truncate text-sm font-extrabold">{{ selectedTransaction.merchantName || '-' }}</p>
+                </div>
+                <div class="bg-[var(--app-surface)] p-3">
+                  <p class="text-[10px] font-bold text-[var(--app-muted)]">订单号</p>
+                  <p class="mt-1 break-all font-mono text-xs font-extrabold leading-5">{{ orderNumber(selectedTransaction) || '-' }}</p>
                 </div>
                 <div class="bg-[var(--app-surface)] p-3">
                   <p class="text-[10px] font-bold text-[var(--app-muted)]">标签</p>
