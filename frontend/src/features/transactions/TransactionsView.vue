@@ -44,9 +44,10 @@ const importFileName = ref('')
 const importAccountId = ref('')
 const importExpenseCategoryId = ref('')
 const importIncomeCategoryId = ref('')
-const importStage = ref<'idle' | 'parsing' | 'importing'>('idle')
+const importStage = ref<'idle' | 'parsing' | 'importing' | 'done'>('idle')
 const importProgressDone = ref(0)
 const importProgressTotal = ref(0)
+const importProgressMessage = ref('')
 const filters = ref({
   keyword: '',
   type: '',
@@ -116,6 +117,9 @@ const canBatchDelete = computed(() => selectedTransactions.value.some((item) => 
 const importableDrafts = computed(() => importDrafts.value.filter((draft) => draft.valid))
 const skippedImportCount = computed(() => importDrafts.value.length - importableDrafts.value.length)
 const importProgressPercent = computed(() => {
+  if (importStage.value === 'parsing') {
+    return 100
+  }
   if (importProgressTotal.value <= 0) {
     return 0
   }
@@ -128,9 +132,13 @@ const importProgressLabel = computed(() => {
   if (importStage.value === 'importing') {
     return `导入中 ${importProgressDone.value}/${importProgressTotal.value}`
   }
+  if (importStage.value === 'done') {
+    return importProgressMessage.value
+  }
   return importDrafts.value.length > 0 ? `已解析 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行` : ''
 })
 const showImportProgress = computed(() => importStage.value !== 'idle')
+const importProgressIndeterminate = computed(() => importStage.value === 'parsing')
 
 function buildTransactionParams(page = 1, size = pageSize) {
   const params = new URLSearchParams()
@@ -355,6 +363,14 @@ async function loadMore() {
   await load(currentPage.value + 1, true)
 }
 
+function handleTransactionsScroll(event: Event) {
+  const target = event.currentTarget as HTMLElement
+  const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
+  if (distanceToBottom <= 160) {
+    void loadMore()
+  }
+}
+
 function csvEscape(value: unknown) {
   const text = value == null ? '' : String(value)
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
@@ -430,12 +446,7 @@ function clearImportPreview() {
   importStage.value = 'idle'
   importProgressDone.value = 0
   importProgressTotal.value = 0
-}
-
-function resetImportProgress() {
-  importStage.value = 'idle'
-  importProgressDone.value = 0
-  importProgressTotal.value = 0
+  importProgressMessage.value = ''
 }
 
 function yieldToBrowser() {
@@ -460,24 +471,26 @@ async function handleImportFile(event: Event) {
 
   importSaving.value = true
   importStage.value = 'parsing'
-  importProgressDone.value = 10
-  importProgressTotal.value = 100
+  importProgressDone.value = 0
+  importProgressTotal.value = 0
+  importProgressMessage.value = ''
   error.value = ''
   success.value = ''
   importFileName.value = file.name
   importDrafts.value = []
   try {
     await yieldToBrowser()
-    importProgressDone.value = 35
     importDrafts.value = await parseStatementFile(file, buildImportContext())
     importProgressDone.value = 100
+    importProgressTotal.value = 100
+    importProgressMessage.value = `解析完成 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行`
+    importStage.value = 'done'
     success.value = `已解析 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行`
   } catch (importError) {
     clearImportPreview()
     error.value = importError instanceof Error ? importError.message : '解析账单失败'
   } finally {
     importSaving.value = false
-    resetImportProgress()
   }
 }
 
@@ -495,9 +508,11 @@ async function submitImport() {
   importStage.value = 'importing'
   importProgressDone.value = 0
   importProgressTotal.value = drafts.length
+  importProgressMessage.value = ''
   error.value = ''
   success.value = ''
   try {
+    await yieldToBrowser()
     let imported = 0
     let skippedDuplicates = 0
     for (let index = 0; index < drafts.length; index += 50) {
@@ -521,15 +536,20 @@ async function submitImport() {
       imported += result.imported
       skippedDuplicates += result.skippedDuplicates
       importProgressDone.value = Math.min(index + chunk.length, importProgressTotal.value)
+      await yieldToBrowser()
     }
-    success.value = `已导入 ${imported} 条账单${skippedDuplicates ? `，重复跳过 ${skippedDuplicates} 条` : ''}${skippedImportCount.value ? `，无效跳过 ${skippedImportCount.value} 条` : ''}`
-    clearImportPreview()
+    const summary = `已导入 ${imported} 条账单${skippedDuplicates ? `，重复跳过 ${skippedDuplicates} 条` : ''}${skippedImportCount.value ? `，无效跳过 ${skippedImportCount.value} 条` : ''}`
+    success.value = summary
+    importProgressMessage.value = summary
+    importStage.value = 'done'
+    importProgressDone.value = importProgressTotal.value
+    importDrafts.value = []
+    importFileName.value = ''
     await load(1)
   } catch (importError) {
     error.value = importError instanceof Error ? importError.message : '导入账单失败'
   } finally {
     importSaving.value = false
-    resetImportProgress()
   }
 }
 
@@ -787,7 +807,7 @@ watch(() => bookStore.currentBookId, () => load(1))
         <p class="font-mono text-xs font-extrabold text-[var(--app-muted)]">{{ loading ? 'loading' : `${transactions.length} rows` }}</p>
       </header>
 
-      <div class="max-h-[520px] overflow-y-auto xl:h-[calc(100%-3rem)] xl:max-h-none">
+      <div class="max-h-[520px] overflow-y-auto xl:h-[calc(100%-3rem)] xl:max-h-none" @scroll.passive="handleTransactionsScroll">
         <button
           v-for="item in transactions"
           :key="item.id"
@@ -882,7 +902,11 @@ watch(() => bookStore.currentBookId, () => load(1))
                 <p class="font-mono text-xs font-extrabold">{{ importProgressPercent }}%</p>
               </div>
               <div class="h-2 overflow-hidden rounded-full bg-[var(--app-border-soft)]">
-                <div class="h-full bg-[var(--app-inverse)] transition-all duration-300" :style="{ width: `${importProgressPercent}%` }" />
+                <div
+                  class="h-full bg-[var(--app-inverse)] transition-all duration-300"
+                  :class="{ 'animate-pulse': importProgressIndeterminate }"
+                  :style="{ width: `${importProgressPercent}%` }"
+                />
               </div>
             </div>
 
