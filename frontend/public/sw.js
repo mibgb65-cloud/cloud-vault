@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'cloud-vault-static-v3'
+const STATIC_CACHE = 'cloud-vault-static-v4'
 const API_CACHE = 'cloud-vault-api-v1'
 const STATIC_ASSETS = ['/', '/manifest.webmanifest', '/icon.svg']
 
