@@ -642,7 +642,7 @@ watch(() => bookStore.currentBookId, () => load(1))
 
 <template>
   <div class="grid gap-3 xl:h-[calc(100vh-4.5rem)] xl:min-h-[720px] xl:grid-cols-[280px_minmax(420px,620px)_minmax(420px,1fr)] 2xl:grid-cols-[286px_minmax(460px,680px)_minmax(460px,1fr)]">
-    <aside class="min-h-0 overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
+    <aside class="min-h-0 overflow-y-auto overscroll-contain border border-[var(--app-border)] bg-[var(--app-surface)]">
       <section class="border-b border-[var(--app-border)] p-3">
         <p class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">ledger</p>
         <h1 class="mt-1 text-xl font-extrabold">账单工作台</h1>
@@ -734,8 +734,8 @@ watch(() => bookStore.currentBookId, () => load(1))
             <input class="sr-only" type="file" accept=".csv,.xlsx" :disabled="importSaving" @change="handleImportFile" />
           </label>
 
-          <div v-if="importDrafts.length > 0" class="border border-[var(--app-border-soft)] bg-[var(--app-subtle)]">
-            <div class="grid grid-cols-3 border-b border-[var(--app-border-soft)] text-center">
+          <div v-if="importDrafts.length > 0" class="flex max-h-80 flex-col overflow-hidden border border-[var(--app-border-soft)] bg-[var(--app-subtle)]">
+            <div class="grid shrink-0 grid-cols-3 border-b border-[var(--app-border-soft)] text-center">
               <div class="p-2">
                 <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">文件</p>
                 <p class="mt-1 truncate text-xs font-extrabold">{{ importFileName }}</p>
@@ -749,7 +749,7 @@ watch(() => bookStore.currentBookId, () => load(1))
                 <p class="mt-1 font-mono text-sm font-extrabold text-[var(--app-muted)]">{{ skippedImportCount }}</p>
               </div>
             </div>
-            <div class="max-h-56 overflow-y-auto">
+            <div class="min-h-0 flex-1 overflow-y-auto">
               <div
                 v-for="draft in importDrafts.slice(0, 8)"
                 :key="draft.id"
@@ -772,7 +772,7 @@ watch(() => bookStore.currentBookId, () => load(1))
                 另有 {{ importDrafts.length - 8 }} 行
               </p>
             </div>
-            <div class="grid grid-cols-2 gap-2 border-t border-[var(--app-border-soft)] p-2">
+            <div class="grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--app-border-soft)] bg-[var(--app-subtle)] p-2">
               <BaseButton variant="secondary" :disabled="importSaving || importableDrafts.length === 0" @click="submitImport">
                 导入 {{ importableDrafts.length }}
               </BaseButton>
