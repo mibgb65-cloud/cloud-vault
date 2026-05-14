@@ -44,6 +44,9 @@ const importFileName = ref('')
 const importAccountId = ref('')
 const importExpenseCategoryId = ref('')
 const importIncomeCategoryId = ref('')
+const importStage = ref<'idle' | 'parsing' | 'importing'>('idle')
+const importProgressDone = ref(0)
+const importProgressTotal = ref(0)
 const filters = ref({
   keyword: '',
   type: '',
@@ -112,6 +115,22 @@ const selectedNonTransferCount = computed(() => selectedTransactions.value.filte
 const canBatchDelete = computed(() => selectedTransactions.value.some((item) => !item.deletedAt))
 const importableDrafts = computed(() => importDrafts.value.filter((draft) => draft.valid))
 const skippedImportCount = computed(() => importDrafts.value.length - importableDrafts.value.length)
+const importProgressPercent = computed(() => {
+  if (importProgressTotal.value <= 0) {
+    return 0
+  }
+  return Math.min(100, Math.round((importProgressDone.value / importProgressTotal.value) * 100))
+})
+const importProgressLabel = computed(() => {
+  if (importStage.value === 'parsing') {
+    return '解析账单中'
+  }
+  if (importStage.value === 'importing') {
+    return `导入中 ${importProgressDone.value}/${importProgressTotal.value}`
+  }
+  return importDrafts.value.length > 0 ? `已解析 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行` : ''
+})
+const showImportProgress = computed(() => importStage.value !== 'idle')
 
 function buildTransactionParams(page = 1, size = pageSize) {
   const params = new URLSearchParams()
@@ -403,6 +422,21 @@ function buildImportContext() {
 function clearImportPreview() {
   importDrafts.value = []
   importFileName.value = ''
+  importStage.value = 'idle'
+  importProgressDone.value = 0
+  importProgressTotal.value = 0
+}
+
+function resetImportProgress() {
+  importStage.value = 'idle'
+  importProgressDone.value = 0
+  importProgressTotal.value = 0
+}
+
+function yieldToBrowser() {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, 0)
+  })
 }
 
 async function handleImportFile(event: Event) {
@@ -420,18 +454,25 @@ async function handleImportFile(event: Event) {
   }
 
   importSaving.value = true
+  importStage.value = 'parsing'
+  importProgressDone.value = 10
+  importProgressTotal.value = 100
   error.value = ''
   success.value = ''
   importFileName.value = file.name
   importDrafts.value = []
   try {
+    await yieldToBrowser()
+    importProgressDone.value = 35
     importDrafts.value = await parseStatementFile(file, buildImportContext())
+    importProgressDone.value = 100
     success.value = `已解析 ${importDrafts.value.length} 行，可导入 ${importableDrafts.value.length} 行`
   } catch (importError) {
     clearImportPreview()
     error.value = importError instanceof Error ? importError.message : '解析账单失败'
   } finally {
     importSaving.value = false
+    resetImportProgress()
   }
 }
 
@@ -446,15 +487,19 @@ async function submitImport() {
   }
 
   importSaving.value = true
+  importStage.value = 'importing'
+  importProgressDone.value = 0
+  importProgressTotal.value = drafts.length
   error.value = ''
   success.value = ''
   try {
     let imported = 0
     let skippedDuplicates = 0
     for (let index = 0; index < drafts.length; index += 50) {
+      const chunk = drafts.slice(index, index + 50)
       const result = await importTransactions(
         bookStore.currentBookId,
-        drafts.slice(index, index + 50).map((draft) => ({
+        chunk.map((draft) => ({
           type: draft.type,
           amount: draft.amount,
           accountId: draft.accountId,
@@ -470,6 +515,7 @@ async function submitImport() {
       )
       imported += result.imported
       skippedDuplicates += result.skippedDuplicates
+      importProgressDone.value = Math.min(index + chunk.length, importProgressTotal.value)
     }
     success.value = `已导入 ${imported} 条账单${skippedDuplicates ? `，重复跳过 ${skippedDuplicates} 条` : ''}${skippedImportCount.value ? `，无效跳过 ${skippedImportCount.value} 条` : ''}`
     clearImportPreview()
@@ -478,6 +524,7 @@ async function submitImport() {
     error.value = importError instanceof Error ? importError.message : '导入账单失败'
   } finally {
     importSaving.value = false
+    resetImportProgress()
   }
 }
 
@@ -706,83 +753,6 @@ watch(() => bookStore.currentBookId, () => load(1))
       </section>
 
       <section class="border-t border-[var(--app-border)] p-3">
-        <div class="mb-2 flex items-center gap-2">
-          <Upload class="h-4 w-4 text-[var(--app-muted)]" />
-          <h2 class="text-sm font-extrabold">导入账单</h2>
-        </div>
-        <div class="grid gap-2">
-          <label class="grid gap-1">
-            <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">default account</span>
-            <BaseSelect v-model="importAccountId" :options="accountOptions" placement="top" />
-          </label>
-          <div class="grid grid-cols-2 gap-2">
-            <label class="grid gap-1">
-              <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">expense</span>
-              <BaseSelect v-model="importExpenseCategoryId" :options="importExpenseCategoryOptions" placement="top" />
-            </label>
-            <label class="grid gap-1">
-              <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">income</span>
-              <BaseSelect v-model="importIncomeCategoryId" :options="importIncomeCategoryOptions" placement="top" />
-            </label>
-          </div>
-          <label
-            class="flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-sm font-bold transition hover:-translate-y-px hover:bg-[var(--app-subtle)]"
-            :class="{ 'pointer-events-none opacity-50': importSaving }"
-          >
-            <Upload class="h-4 w-4" />
-            {{ importSaving ? '处理中' : '选择支付宝 CSV / 微信 XLSX' }}
-            <input class="sr-only" type="file" accept=".csv,.xlsx" :disabled="importSaving" @change="handleImportFile" />
-          </label>
-
-          <div v-if="importDrafts.length > 0" class="flex max-h-80 flex-col overflow-hidden border border-[var(--app-border-soft)] bg-[var(--app-subtle)]">
-            <div class="grid shrink-0 grid-cols-3 border-b border-[var(--app-border-soft)] text-center">
-              <div class="p-2">
-                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">文件</p>
-                <p class="mt-1 truncate text-xs font-extrabold">{{ importFileName }}</p>
-              </div>
-              <div class="border-l border-[var(--app-border-soft)] p-2">
-                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">可导入</p>
-                <p class="mt-1 font-mono text-sm font-extrabold text-income">{{ importableDrafts.length }}</p>
-              </div>
-              <div class="border-l border-[var(--app-border-soft)] p-2">
-                <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">跳过</p>
-                <p class="mt-1 font-mono text-sm font-extrabold text-[var(--app-muted)]">{{ skippedImportCount }}</p>
-              </div>
-            </div>
-            <div class="min-h-0 flex-1 overflow-y-auto">
-              <div
-                v-for="draft in importDrafts.slice(0, 8)"
-                :key="draft.id"
-                class="grid grid-cols-[1fr_5.5rem] gap-2 border-b border-[var(--app-border-soft)] px-2 py-2 last:border-b-0"
-              >
-                <div class="min-w-0">
-                  <p class="truncate text-xs font-extrabold">{{ draft.merchantName || draft.rawCategory || '账单' }}</p>
-                  <p class="mt-1 truncate font-mono text-[10px] font-bold text-[var(--app-muted)]">
-                    {{ typeLabel(draft.type) }} / {{ draft.reason || draft.rawStatus || '可导入' }}
-                  </p>
-                </div>
-                <p
-                  class="truncate text-right font-mono text-xs font-extrabold"
-                  :class="{ 'text-expense': draft.type === 'expense', 'text-income': draft.type === 'income', 'text-[var(--app-muted)]': !draft.valid }"
-                >
-                  {{ amountPrefix(draft.type) }}{{ formatMoney(draft.amount, currency) }}
-                </p>
-              </div>
-              <p v-if="importDrafts.length > 8" class="px-2 py-2 text-center text-[11px] font-bold text-[var(--app-muted)]">
-                另有 {{ importDrafts.length - 8 }} 行
-              </p>
-            </div>
-            <div class="grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--app-border-soft)] bg-[var(--app-subtle)] p-2">
-              <BaseButton variant="secondary" :disabled="importSaving || importableDrafts.length === 0" @click="submitImport">
-                导入 {{ importableDrafts.length }}
-              </BaseButton>
-              <BaseButton variant="ghost" :disabled="importSaving" @click="clearImportPreview">清除</BaseButton>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="border-t border-[var(--app-border)] p-3">
         <div class="mb-2 flex items-center justify-between gap-2">
           <h2 class="text-sm font-extrabold">批量操作</h2>
           <p class="font-mono text-xs font-bold text-[var(--app-muted)]">已选 {{ selectedCount }}</p>
@@ -867,6 +837,99 @@ watch(() => bookStore.currentBookId, () => load(1))
 
     <aside class="min-h-0 overflow-hidden border border-[var(--app-border)] bg-[var(--app-surface)]">
       <div class="h-full overflow-y-auto">
+        <section class="border-b border-[var(--app-border)] p-3">
+          <header class="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <p class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">import</p>
+              <h2 class="mt-1 text-sm font-extrabold">导入账单</h2>
+            </div>
+            <p v-if="importProgressLabel" class="shrink-0 font-mono text-xs font-extrabold text-[var(--app-muted)]">{{ importProgressLabel }}</p>
+          </header>
+
+          <div class="grid gap-3">
+            <div class="grid gap-3 sm:grid-cols-3">
+              <label class="grid gap-1">
+                <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">default account</span>
+                <BaseSelect v-model="importAccountId" :options="accountOptions" />
+              </label>
+              <label class="grid gap-1">
+                <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">expense</span>
+                <BaseSelect v-model="importExpenseCategoryId" :options="importExpenseCategoryOptions" />
+              </label>
+              <label class="grid gap-1">
+                <span class="font-mono text-[10px] font-extrabold uppercase text-[var(--app-muted)]">income</span>
+                <BaseSelect v-model="importIncomeCategoryId" :options="importIncomeCategoryOptions" />
+              </label>
+            </div>
+
+            <label
+              class="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--app-border)] bg-[var(--app-surface)] px-3 text-sm font-bold transition hover:-translate-y-px hover:bg-[var(--app-subtle)]"
+              :class="{ 'pointer-events-none opacity-50': importSaving }"
+            >
+              <Upload class="h-4 w-4" />
+              {{ importStage === 'parsing' ? '解析中' : importStage === 'importing' ? '导入中' : '选择支付宝 CSV / 微信 XLSX' }}
+              <input class="sr-only" type="file" accept=".csv,.xlsx" :disabled="importSaving" @change="handleImportFile" />
+            </label>
+
+            <div v-if="showImportProgress" class="border border-[var(--app-border-soft)] bg-[var(--app-subtle)] p-3">
+              <div class="mb-2 flex items-center justify-between gap-3">
+                <p class="text-xs font-extrabold text-[var(--app-muted)]">{{ importProgressLabel }}</p>
+                <p class="font-mono text-xs font-extrabold">{{ importProgressPercent }}%</p>
+              </div>
+              <div class="h-2 overflow-hidden rounded-full bg-[var(--app-border-soft)]">
+                <div class="h-full bg-[var(--app-inverse)] transition-all duration-300" :style="{ width: `${importProgressPercent}%` }" />
+              </div>
+            </div>
+
+            <div v-if="importDrafts.length > 0" class="flex max-h-[34rem] flex-col overflow-hidden border border-[var(--app-border-soft)] bg-[var(--app-subtle)]">
+              <div class="grid shrink-0 grid-cols-3 border-b border-[var(--app-border-soft)] text-center">
+                <div class="p-3">
+                  <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">文件</p>
+                  <p class="mt-1 truncate text-xs font-extrabold">{{ importFileName }}</p>
+                </div>
+                <div class="border-l border-[var(--app-border-soft)] p-3">
+                  <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">可导入</p>
+                  <p class="mt-1 font-mono text-base font-extrabold text-income">{{ importableDrafts.length }}</p>
+                </div>
+                <div class="border-l border-[var(--app-border-soft)] p-3">
+                  <p class="font-mono text-[10px] font-bold text-[var(--app-muted)]">跳过</p>
+                  <p class="mt-1 font-mono text-base font-extrabold text-[var(--app-muted)]">{{ skippedImportCount }}</p>
+                </div>
+              </div>
+              <div class="min-h-0 flex-1 overflow-y-auto">
+                <div
+                  v-for="draft in importDrafts.slice(0, 18)"
+                  :key="draft.id"
+                  class="grid grid-cols-[minmax(0,1fr)_6.5rem_6.5rem] items-center gap-3 border-b border-[var(--app-border-soft)] px-3 py-2 last:border-b-0"
+                >
+                  <div class="min-w-0">
+                    <p class="truncate text-sm font-extrabold">{{ draft.merchantName || draft.rawCategory || '账单' }}</p>
+                    <p class="mt-1 truncate font-mono text-[10px] font-bold text-[var(--app-muted)]">
+                      {{ draft.reason || draft.rawStatus || '可导入' }}
+                    </p>
+                  </div>
+                  <p class="truncate text-xs font-extrabold text-[var(--app-muted)]">{{ typeLabel(draft.type) }}</p>
+                  <p
+                    class="truncate text-right font-mono text-xs font-extrabold"
+                    :class="{ 'text-expense': draft.type === 'expense', 'text-income': draft.type === 'income', 'text-[var(--app-muted)]': !draft.valid }"
+                  >
+                    {{ amountPrefix(draft.type) }}{{ formatMoney(draft.amount, currency) }}
+                  </p>
+                </div>
+                <p v-if="importDrafts.length > 18" class="px-3 py-2 text-center text-[11px] font-bold text-[var(--app-muted)]">
+                  另有 {{ importDrafts.length - 18 }} 行
+                </p>
+              </div>
+              <div class="grid shrink-0 grid-cols-2 gap-2 border-t border-[var(--app-border-soft)] bg-[var(--app-subtle)] p-3">
+                <BaseButton variant="secondary" :disabled="importSaving || importableDrafts.length === 0" @click="submitImport">
+                  导入 {{ importableDrafts.length }}
+                </BaseButton>
+                <BaseButton variant="ghost" :disabled="importSaving" @click="clearImportPreview">清除</BaseButton>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <form v-if="!selectedTransaction || editingId" class="flex min-h-full flex-col" @submit.prevent="submit">
         <header class="flex h-12 items-center justify-between border-b border-[var(--app-border)] px-3">
           <div>
